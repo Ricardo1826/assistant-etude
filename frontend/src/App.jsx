@@ -1,8 +1,108 @@
 import { useState, useRef, useEffect } from "react"
+import { jsPDF } from "jspdf"
 import ReactMarkdown from "react-markdown"
 
 const menu = ["Bibliothèque", "Chat", "Quiz", "Flashcards", "Progression"]
-const API = "http://localhost:3001"
+const API = import.meta.env.VITE_API_URL || "http://localhost:3001"
+
+function BoutonCopier({ texte }) {
+  const [copie, setCopie] = useState(false)
+
+  async function copier() {
+    try {
+      await navigator.clipboard.writeText(texte)
+      setCopie(true)
+      setTimeout(() => setCopie(false), 2000)
+    } catch {
+      // la copie n'est pas disponible sur ce navigateur
+    }
+  }
+
+  return (
+    <button
+      onClick={copier}
+      className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 transition hover:bg-slate-100"
+    >
+      {copie ? "Copié" : "Copier"}
+    </button>
+  )
+}
+
+function nettoyer(texte) {
+  return texte
+    .replace(/\*\*(.*?)\*\*/g, "$1")
+    .replace(/\*(.*?)\*/g, "$1")
+    .replace(/`/g, "")
+    .replace(/\u2192/g, "->")
+    .replace(/[\u2018\u2019]/g, "'")
+    .replace(/[\u201C\u201D]/g, '"')
+    .replace(/[\u2013\u2014]/g, "-")
+    .replace(/\u2026/g, "...")
+    .replace(/\u2022/g, "-")
+    .replace(/[^\x00-\xFF]/g, "")
+}
+
+function telechargerPDF(titre, texte) {
+  const doc = new jsPDF({ unit: "mm", format: "a4" })
+  const marge = 18
+  const largeur = 210 - marge * 2
+  let y = marge
+
+  function ecrire(ligne, taille, gras) {
+    doc.setFont("helvetica", gras ? "bold" : "normal")
+    doc.setFontSize(taille)
+    for (const morceau of doc.splitTextToSize(ligne, largeur)) {
+      if (y > 297 - marge) {
+        doc.addPage()
+        y = marge
+      }
+      doc.text(morceau, marge, y)
+      y += taille * 0.45
+    }
+  }
+
+  ecrire(nettoyer(titre), 16, true)
+  y += 4
+
+  for (const ligne of texte.split("\n")) {
+    if (!ligne.trim()) {
+      y += 3
+      continue
+    }
+    if (/^\s*([-*_])\1{2,}\s*$/.test(ligne)) continue
+
+    const entete = ligne.match(/^#{1,6}\s+(.*)/)
+    if (entete) {
+      y += 2
+      ecrire(nettoyer(entete[1]), 13, true)
+      y += 1
+      continue
+    }
+
+    const puce = ligne.match(/^\s*[*-]\s+(.*)/)
+    if (puce) {
+      ecrire("- " + nettoyer(puce[1]), 11, false)
+      y += 1
+      continue
+    }
+
+    ecrire(nettoyer(ligne), 11, false)
+    y += 1
+  }
+
+  doc.save(`${titre.replace(/\.pdf$/i, "")}-resume.pdf`)
+}
+
+function BoutonPDF({ titre, texte }) {
+  return (
+    <button
+      onClick={() => telechargerPDF(titre, texte)}
+      className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 transition hover:bg-slate-100"
+    >
+      Télécharger en PDF
+    </button>
+  )
+}
 
 function Bibliotheque({
   liste,
@@ -161,9 +261,15 @@ function Bibliotheque({
 
                 {resumes[c.id] && (
                   <div className="mt-5 border-t border-slate-200 pt-5">
-                    <h3 className="text-sm font-semibold text-slate-900">Résumé</h3>
+                    <div className="flex items-center justify-between gap-4">
+                      <h3 className="text-sm font-semibold text-slate-900">Résumé</h3>
+                      <div className="flex items-center gap-2">
+                        <BoutonCopier texte={resumes[c.id]} />
+                        <BoutonPDF titre={c.nom} texte={resumes[c.id]} />
+                      </div>
+                    </div>
                     <div className="prose prose-slate prose-sm mt-3 max-w-none">
-                      <ReactMarkdown>{resumes[c.id]}</ReactMarkdown>
+                     <ReactMarkdown>{resumes[c.id]}</ReactMarkdown>
                     </div>
                   </div>
                 )}
@@ -250,6 +356,9 @@ function Chat({ cours, messages, setMessages }) {
                 <div className="prose prose-slate prose-sm max-w-none">
                   <ReactMarkdown>{m.texte}</ReactMarkdown>
                 </div>
+                <div className="mt-3 flex justify-end">
+                  <BoutonCopier texte={m.texte} />
+                </div>
                 {m.sources && m.sources.length > 0 && (
                   <p className="mt-3 border-t border-slate-200 pt-2 text-xs text-slate-500">
                     Pages consultées :{" "}
@@ -303,6 +412,8 @@ function Quiz({ cours, ajouterResultat, revision }) {
   const [score, setScore] = useState(0)
   const [fini, setFini] = useState(false)
   const [ciblees, setCiblees] = useState([])
+  const [nombreQuestions, setNombreQuestions] = useState(5)
+  const [difficulte, setDifficulte] = useState("moyen")
 
   useEffect(() => {
     if (revision && cours) generer(revision.notions)
@@ -336,7 +447,12 @@ function Quiz({ cours, ajouterResultat, revision }) {
       const reponse = await fetch(`${API}/api/cours/${cours.id}/quiz`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ nombre: 5, dejaPosees, notions }),
+        body: JSON.stringify({
+          nombre: nombreQuestions,
+          difficulte,
+          dejaPosees,
+          notions,
+        }),
       })
       const donnees = await reponse.json()
       if (!reponse.ok) throw new Error(donnees.erreur || "Erreur inconnue")
@@ -399,8 +515,38 @@ function Quiz({ cours, ajouterResultat, revision }) {
             ? "Génération en cours..."
             : questions.length > 0
             ? "Nouveau quiz"
-            : "Générer un quiz de 5 questions"}
+            : `Générer un quiz de ${nombreQuestions} questions`}
         </button>
+      </div>
+
+      <div className="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-2">
+        <label className="text-sm text-slate-600">
+          Nombre de questions
+          <select
+            value={nombreQuestions}
+            onChange={(e) => setNombreQuestions(Number(e.target.value))}
+            disabled={chargement}
+            className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none focus:border-indigo-500"
+          >
+            <option value={5}>5 questions</option>
+            <option value={10}>10 questions</option>
+            <option value={15}>15 questions</option>
+          </select>
+        </label>
+
+        <label className="text-sm text-slate-600">
+          Difficulté
+          <select
+            value={difficulte}
+            onChange={(e) => setDifficulte(e.target.value)}
+            disabled={chargement}
+            className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none focus:border-indigo-500"
+          >
+            <option value="facile">Facile</option>
+            <option value="moyen">Moyen</option>
+            <option value="difficile">Difficile</option>
+          </select>
+        </label>
       </div>
 
       {erreur && (
@@ -926,7 +1072,10 @@ function App() {
         </div>
 
         <div className={page === "Progression" ? "" : "hidden"}>
-          <Progression resultats={resultats} onReviser={reviserPointsFaibles} />
+          <Progression
+            resultats={resultats.filter((r) => cours && r.cours === cours.nom)}
+            onReviser={reviserPointsFaibles}
+          />
         </div>
       </main>
     </div>

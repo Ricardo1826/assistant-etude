@@ -233,7 +233,10 @@ app.post("/api/cours/:id/quiz", async (req, res) => {
     return res.status(404).json({ erreur: "Cours introuvable" });
   }
 
-  const nombre = Math.min(Math.max(Number(req.body.nombre) || 5, 3), 10);
+  const nombre = Math.min(Math.max(Number(req.body.nombre) || 5, 3), 15);
+  const difficulte = ["facile", "moyen", "difficile"].includes(req.body.difficulte)
+    ? req.body.difficulte
+    : "moyen";
   const dejaPosees = Array.isArray(req.body.dejaPosees)
     ? req.body.dejaPosees.slice(-30)
     : [];
@@ -270,7 +273,7 @@ app.post("/api/cours/:id/quiz", async (req, res) => {
 
   try {
     const reponse = await genererAvecReprise(
-      `Voici des extraits du cours "${course.nom}". Génère ${nombre} questions à choix multiples, en privilégiant ${angle}.${cible}${evite}\n\n${contexte}`,
+      `Voici des extraits du cours "${course.nom}". Génère ${nombre} questions à choix multiples de niveau ${difficulte}, en privilégiant ${angle}.${cible}${evite}\n\n${contexte}`,
       {
         systemInstruction:
           "Tu es un assistant d'étude. Tu crées des QCM en français uniquement à partir du contenu du cours fourni. Chaque question a exactement 4 propositions, une seule est correcte, et les 3 autres sont plausibles. Place la bonne réponse à une position variable. Chaque question est rattachée à une notion courte du cours (2 à 4 mots). Tu réponds uniquement avec un tableau JSON, sans texte autour, où chaque élément a la forme : {\"notion\": \"...\", \"question\": \"...\", \"options\": [\"...\", \"...\", \"...\", \"...\"], \"bonneReponse\": 0, \"explication\": \"...\"}. bonneReponse est l'index (de 0 à 3) de la bonne proposition. N'utilise jamais de LaTeX ni de signe dollar.",
