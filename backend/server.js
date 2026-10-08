@@ -373,6 +373,127 @@ app.post("/api/cours/:id/flashcards", async (req, res) => {
   }
 });
 
+app.post("/api/cours/:id/question-ouverte", async (req, res) => {
+  const course = cours.get(req.params.id);
+  if (!course) {
+    return res.status(404).json({ erreur: "Cours introuvable" });
+  }
+
+  const dejaPosees = Array.isArray(req.body.dejaPosees)
+    ? req.body.dejaPosees.slice(-20)
+    : [];
+
+  const selection = [...course.extraits]
+    .sort(() => Math.random() - 0.5)
+    .slice(0, 8)
+    .sort((a, b) => (a.page ?? 0) - (b.page ?? 0));
+
+  const contexte = selection
+    .map((e) => `[Page ${e.page ?? "?"}]\n${e.texte}`)
+    .join("\n\n---\n\n");
+
+  const evite = dejaPosees.length
+    ? `\n\nNe repose aucune de ces questions déjà posées, ni une question très proche :\n- ${dejaPosees.join("\n- ")}`
+    : "";
+
+  try {
+    const reponse = await genererAvecReprise(
+      `Voici des extraits du cours "${course.nom}". Pose une seule question ouverte d'examen.${evite}\n\n${contexte}`,
+      {
+        systemInstruction:
+          "Tu es un professeur qui prépare un examen. Tu poses une question ouverte en français, qui demande une réponse rédigée de 3 à 6 phrases, uniquement à partir du contenu du cours fourni. Tu réponds uniquement avec un objet JSON, sans texte autour, de la forme : {\"notion\": \"...\", \"question\": \"...\", \"elementsAttendus\": [\"...\", \"...\", \"...\"]}. notion est un titre court (2 à 4 mots). elementsAttendus contient 3 à 5 idées clés que la réponse doit contenir. N'utilise jamais de LaTeX ni de signe dollar.",
+        responseMimeType: "application/json",
+        temperature: 1,
+        maxOutputTokens: 2000,
+      }
+    );
+
+    const texte = reponse.text.replace(/```json|```/g, "").trim();
+    const brut = JSON.parse(texte);
+    const q = Array.isArray(brut) ? brut[0] : brut;
+
+    if (!q || !q.question || !Array.isArray(q.elementsAttendus)) {
+      throw new Error("Question invalide");
+    }
+
+    res.json({
+      notion: q.notion || "Général",
+      question: q.question,
+      elementsAttendus: q.elementsAttendus,
+    });
+  } catch (erreur) {
+    console.error(erreur);
+    if (erreur.status === 503 || erreur.status === 429) {
+      return res.status(503).json({
+        erreur: "Le modèle est surchargé ou la limite gratuite est atteinte. Réessaie dans une minute.",
+      });
+    }
+    res.status(500).json({ erreur: "Impossible de générer la question" });
+  }
+});
+
+app.post("/api/cours/:id/corriger", async (req, res) => {
+  const course = cours.get(req.params.id);
+  if (!course) {
+    return res.status(404).json({ erreur: "Cours introuvable" });
+  }
+
+  const question = (req.body.question || "").trim();
+  const reponseEtudiant = (req.body.reponse || "").trim();
+  const elements = Array.isArray(req.body.elementsAttendus)
+    ? req.body.elementsAttendus
+    : [];
+
+  if (!question) {
+    return res.status(400).json({ erreur: "Question manquante" });
+  }
+  if (reponseEtudiant.length < 5) {
+    return res.status(400).json({ erreur: "Ta réponse est trop courte" });
+  }
+
+  const trouves = chercherExtraits(course.extraits, question, 5);
+  const contexte = (trouves.length > 0 ? trouves : course.extraits.slice(0, 5))
+    .map((e) => `[Page ${e.page ?? "?"}]\n${e.texte}`)
+    .join("\n\n---\n\n");
+
+  try {
+    const reponse = await genererAvecReprise(
+      `Extraits du cours "${course.nom}" :\n\n${contexte}\n\nQuestion d'examen : ${question}\n\nIdées clés attendues :\n- ${elements.join("\n- ")}\n\nRéponse de l'étudiant :\n${reponseEtudiant.slice(0, 4000)}`,
+      {
+        systemInstruction:
+          "Tu es un professeur bienveillant mais exigeant qui corrige une réponse d'examen, en français, en t'appuyant uniquement sur le contenu du cours fourni. Tu réponds uniquement avec un objet JSON, sans texte autour, de la forme : {\"note\": 0, \"pointsForts\": [\"...\"], \"manques\": [\"...\"], \"conseil\": \"...\"}. note est un entier de 0 à 10. pointsForts liste ce que l'étudiant a bien dit. manques liste les idées importantes absentes ou fausses, avec la bonne information tirée du cours. conseil est une phrase pour progresser. Si la réponse est hors sujet, mets une note basse. Ajoute aussi un champ reponseModele : une réponse modèle complète et bien rédigée de 4 à 8 phrases, tirée du cours, qui contient toutes les idées clés attendues. N'utilise jamais de LaTeX ni de signe dollar.",
+        responseMimeType: "application/json",
+        temperature: 0.3,
+        maxOutputTokens: 2000,
+      }
+    );
+
+    const texte = reponse.text.replace(/```json|```/g, "").trim();
+    const brut = JSON.parse(texte);
+    const note = Math.min(Math.max(Math.round(Number(brut.note)), 0), 10);
+
+    if (Number.isNaN(note)) {
+      throw new Error("Note invalide");
+    }
+
+    res.json({
+      note,
+      pointsForts: Array.isArray(brut.pointsForts) ? brut.pointsForts : [],
+      manques: Array.isArray(brut.manques) ? brut.manques : [],
+      conseil: brut.conseil || "",
+      reponseModele: brut.reponseModele || "",
+    });
+  } catch (erreur) {
+    console.error(erreur);
+    if (erreur.status === 503 || erreur.status === 429) {
+      return res.status(503).json({
+        erreur: "Le modèle est surchargé ou la limite gratuite est atteinte. Réessaie dans une minute.",
+      });
+    }
+    res.status(500).json({ erreur: "Impossible de corriger la réponse" });
+  }
+});
+
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
   console.log(`Serveur lancé sur http://localhost:${PORT}`);

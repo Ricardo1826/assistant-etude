@@ -2,7 +2,7 @@ import { useState, useRef, useEffect } from "react"
 import { jsPDF } from "jspdf"
 import ReactMarkdown from "react-markdown"
 
-const menu = ["Bibliothèque", "Chat", "Quiz", "Flashcards", "Progression"]
+const menu = ["Bibliothèque", "Chat", "Quiz", "Flashcards", "Examen", "Progression"]
 const API = import.meta.env.VITE_API_URL || "http://localhost:3001"
 
 function BoutonCopier({ texte }) {
@@ -915,6 +915,207 @@ function Flashcards({ cours }) {
   )
 }
 
+function Examen({ cours, ajouterResultat }) {
+  const [question, setQuestion] = useState(null)
+  const [reponse, setReponse] = useState("")
+  const [correction, setCorrection] = useState(null)
+  const [chargement, setChargement] = useState(false)
+  const [correctionEnCours, setCorrectionEnCours] = useState(false)
+  const [erreur, setErreur] = useState("")
+
+  if (!cours) {
+    return (
+      <div className="mt-8 bg-white rounded-xl border border-slate-200 shadow-sm p-8 text-sm text-slate-500">
+        Ajoute d'abord un cours dans la Bibliothèque pour t'entraîner.
+      </div>
+    )
+  }
+
+  async function nouvelleQuestion() {
+    setChargement(true)
+    setErreur("")
+    setQuestion(null)
+    setReponse("")
+    setCorrection(null)
+    const cle = `questionsOuvertes:${cours.nom}`
+    let dejaPosees = []
+    try {
+      dejaPosees = JSON.parse(localStorage.getItem(cle)) || []
+    } catch {
+      dejaPosees = []
+    }
+    try {
+      const r = await fetch(`${API}/api/cours/${cours.id}/question-ouverte`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ dejaPosees }),
+      })
+      const donnees = await r.json()
+      if (!r.ok) throw new Error(donnees.erreur || "Erreur inconnue")
+      setQuestion(donnees)
+      try {
+        localStorage.setItem(
+          cle,
+          JSON.stringify([...dejaPosees, donnees.question].slice(-20))
+        )
+      } catch {
+        // la mémoire du navigateur est indisponible, on continue sans
+      }
+    } catch (e) {
+      setErreur(e.message)
+    } finally {
+      setChargement(false)
+    }
+  }
+
+  async function corriger() {
+    setCorrectionEnCours(true)
+    setErreur("")
+    try {
+      const r = await fetch(`${API}/api/cours/${cours.id}/corriger`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          question: question.question,
+          elementsAttendus: question.elementsAttendus,
+          reponse,
+        }),
+      })
+      const donnees = await r.json()
+      if (!r.ok) throw new Error(donnees.erreur || "Erreur inconnue")
+      setCorrection(donnees)
+      ajouterResultat({
+        notion: question.notion || "Général",
+        juste: donnees.note >= 6,
+        cours: cours.nom,
+      })
+    } catch (e) {
+      setErreur(e.message)
+    } finally {
+      setCorrectionEnCours(false)
+    }
+  }
+
+  const couleurNote = correction
+    ? correction.note >= 8
+      ? "text-green-600"
+      : correction.note >= 5
+      ? "text-amber-600"
+      : "text-red-600"
+    : ""
+
+  return (
+    <div className="mt-8 bg-white rounded-xl border border-slate-200 shadow-sm p-6 md:p-8">
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <h2 className="text-lg font-semibold text-slate-900">
+            Questions d'examen
+          </h2>
+          <p className="mt-1 text-sm text-slate-500">{cours.nom}</p>
+        </div>
+        <button
+          onClick={nouvelleQuestion}
+          disabled={chargement || correctionEnCours}
+          className="rounded-lg bg-indigo-600 px-5 py-2 text-sm font-medium text-white transition hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {chargement
+            ? "Génération en cours..."
+            : question
+            ? "Nouvelle question"
+            : "Générer une question"}
+        </button>
+      </div>
+
+      {erreur && (
+        <p className="mt-6 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700">
+          {erreur}
+        </p>
+      )}
+
+      {question && (
+        <div className="mt-8">
+          <span className="rounded-full bg-indigo-50 px-3 py-1 text-xs font-medium text-indigo-700">
+            {question.notion}
+          </span>
+          <p className="mt-4 text-base font-medium leading-relaxed text-slate-900">
+            {question.question}
+          </p>
+
+          <textarea
+            value={reponse}
+            onChange={(e) => setReponse(e.target.value)}
+            disabled={correction !== null || correctionEnCours}
+            rows={7}
+            placeholder="Rédige ta réponse comme à un examen..."
+            className="mt-4 w-full rounded-lg border border-slate-300 px-4 py-3 text-sm outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100 disabled:bg-slate-50"
+          />
+
+          {correction === null && (
+            <button
+              onClick={corriger}
+              disabled={reponse.trim().length < 5 || correctionEnCours}
+              className="mt-4 rounded-lg bg-indigo-600 px-5 py-2.5 text-sm font-medium text-white transition hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {correctionEnCours ? "Correction en cours..." : "Corriger ma réponse"}
+            </button>
+          )}
+        </div>
+      )}
+
+      {correction && (
+        <div className="mt-8 rounded-lg bg-slate-50 p-6">
+          <p className="text-sm text-slate-500">Ta note</p>
+          <p className={`mt-1 text-4xl font-bold ${couleurNote}`}>
+            {correction.note} / 10
+          </p>
+
+          {correction.pointsForts.length > 0 && (
+            <div className="mt-5">
+              <h3 className="text-sm font-semibold text-slate-900">Points forts</h3>
+              <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-slate-700">
+                {correction.pointsForts.map((p, i) => (
+                  <li key={i}>{p}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {correction.manques.length > 0 && (
+            <div className="mt-5">
+              <h3 className="text-sm font-semibold text-slate-900">À améliorer</h3>
+              <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-slate-700">
+                {correction.manques.map((m, i) => (
+                  <li key={i}>{m}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {correction.conseil && (
+            <p className="mt-5 rounded-lg bg-indigo-50 px-4 py-3 text-sm text-indigo-900">
+              {correction.conseil}
+            </p>
+          )}
+
+          {correction.reponseModele && (
+            <div className="mt-5 rounded-lg border border-slate-200 bg-white p-5">
+              <div className="flex items-center justify-between gap-4">
+                <h3 className="text-sm font-semibold text-slate-900">
+                  Réponse modèle
+                </h3>
+                <BoutonCopier texte={correction.reponseModele} />
+              </div>
+              <p className="mt-3 whitespace-pre-wrap text-sm leading-relaxed text-slate-700">
+                {correction.reponseModele}
+              </p>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
 function App() {
   const [page, setPage] = useState("Bibliothèque")
   const [menuOuvert, setMenuOuvert] = useState(false)
@@ -1069,6 +1270,14 @@ function App() {
 
         <div className={page === "Flashcards" ? "" : "hidden"}>
           <Flashcards key={cours ? cours.id : "aucun"} cours={cours} />
+        </div>
+
+        <div className={page === "Examen" ? "" : "hidden"}>
+          <Examen
+            key={cours ? cours.id : "aucun"}
+            cours={cours}
+            ajouterResultat={ajouterResultat}
+          />
         </div>
 
         <div className={page === "Progression" ? "" : "hidden"}>
